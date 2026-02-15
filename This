@@ -1,0 +1,421 @@
+#Requires AutoHotkey v2.0
+#SingleInstance Force
+ProcessSetPriority "High"
+
+; ==============================================================================
+; GLOBAL DATA & CLASSES
+; ==============================================================================
+class GameState {
+    static Potatoes := 0, Attack := 1, Kills := 0, TotalKills := 0, Souls := 0
+    static Mult := 1.0, AttackSpeed := 1000, BossTimer := 30
+    static IsBoss := false, Secret := "Harvest2026", CritChance := 5
+    static UpgradeLevel := 0, AutoBuy := 0, MaxInv := 20
+}
+
+Global SavePath := A_ScriptDir "\save.ini"
+Global Inventory := [], Gear := {Weapon: {Name: "Wooden Spoon", Atk: 0}}
+Global Zones := [
+    {Name: "Muddy Patch",  HP: 10,   Mult: 1,   Req: 0,     Desc: "Low quality soil."},
+    {Name: "Sprout Hill",  HP: 70,   Mult: 4,   Req: 50,    Desc: "Elevation brings tougher pests."},
+    {Name: "Golden Field", HP: 350,  Mult: 15,  Req: 250,   Desc: "The legendary harvest."},
+    {Name: "Beetle Hive",  HP: 1500, Mult: 60,  Req: 1000,  Desc: "The heart of the infestation."}
+]
+Global Rarities := [
+    {Name: "Common",    Weight: 700, Power: 1.0, Hex: "AAAAAA"},
+    {Name: "Uncommon",  Weight: 200, Power: 2.5, Hex: "00FF00"},
+    {Name: "Rare",      Weight: 75,  Power: 6.0, Hex: "00AAFF"},
+    {Name: "Epic",      Weight: 20,  Power: 15.0, Hex: "AA00FF"},
+    {Name: "Legendary", Weight: 5,   Power: 45.0, Hex: "FFD700"}
+]
+Global CurrentZone := 1, EnemyHP := 10, EnemyMax := 10, SelectedZoneIdx := 1, LastUnlockedZone := 1
+
+; ==============================================================================
+; UI CONSTRUCTION
+; ==============================================================================
+Main := Gui("+AlwaysOnTop", "POTATO ASCENDANT v2.0")
+Main.BackColor := "1A1A1A" 
+Main.SetFont("s10 cWhite", "Segoe UI")
+
+Tabs := Main.Add("Tab3", "x0 y0 w350 h580 cWhite", ["Battle", "World Map", "Shop", "Inventory", "Prestige"])
+
+Tabs.UseTab(1)
+Main.SetFont("s14 Bold cFFD700") 
+StatText := Main.AddText("x20 y45 w310 Center", "0 POTATOES")
+Main.SetFont("s9 Norm cAAAAAA")
+AutoStatus := Main.AddText("x20 y70 w310 Center", "Auto: Idle")
+Main.SetFont("s10 Norm cWhite")
+Main.AddGroupBox("x15 y95 w320 h135", " Combat Area ")
+Main.SetFont("Bold cFF4444")
+EnemyLabel := Main.AddText("x25 y115 w300 Center", "POTATO BEETLE")
+Main.SetFont("Norm cWhite")
+EnemyBar := Main.AddProgress("x25 y140 w300 h20 Background333333 cFF4444", 100)
+Main.SetFont("Bold cFF8800")
+BossText := Main.AddText("x25 y170 w300 Center Hidden", "BOSS: 30s")
+Main.SetFont("Norm c00FF00")
+FloatArea := Main.AddText("x25 y195 w300 h25 Center", "")
+Main.SetFont("s8 cAAAAAA")
+MiniBar := Main.AddProgress("x15 y230 w320 h8 Background333333 c00AAFF", 0)
+MiniText := Main.AddText("x15 y242 w320 Center", "Progress to next Zone")
+Main.SetFont("s10 Norm cWhite")
+LogBox := Main.AddEdit("x15 y270 w320 r8 ReadOnly Background000000 c00FF00", "Welcome back, Farmer!`n")
+Main.AddButton("x15 y455 w155 h40", "MANUAL HARVEST").OnEvent("Click", (*) => DealDamage(true))
+Main.AddButton("x180 y455 w155 h45", "MANUAL SAVE").OnEvent("Click", (*) => (SaveGame(), Log("Manual Save Success.")))
+
+Tabs.UseTab(2)
+ZoneLV := Main.Add("ListView", "x15 y50 r12 w320 Background222222 cWhite", ["Zone Name", "Req", "Status"])
+ZoneLV.OnEvent("Click", SelectZoneFromMap)
+ZoneDesc := Main.AddText("x15 y340 w320 r3", "Select a zone...")
+TravelBtn := Main.AddButton("x15 y430 w320 h40 Disabled", "TRAVEL TO ZONE")
+TravelBtn.OnEvent("Click", (*) => ExecuteTravel())
+
+Tabs.UseTab(3)
+UpgradePriceDisp := Main.AddText("x20 y60 w310 Center", "Cost: 100 Potatoes")
+Main.AddButton("x20 y100 w310 h50", "TRAIN STRENGTH (+1 ATK)").OnEvent("Click", (*) => BuyStrength())
+AutoBuyChk := Main.AddCheckbox("x20 y170", "Enable Auto-Buy Attack")
+AutoBuyChk.OnEvent("Click", (ctrl, *) => (GameState.AutoBuy := ctrl.Value))
+
+Tabs.UseTab(4)
+InvCountText := Main.AddText("x15 y45 w320", "Bag Space: 0 / 20")
+InvLV := Main.Add("ListView", "x15 y65 r11 w320 Background222222 cWhite", ["Item Name", "Atk"])
+InvLV.ModifyCol(1, 230), InvLV.ModifyCol(2, 60)
+Main.AddButton("x15 y340 w155 h40", "EQUIP ITEM").OnEvent("Click", (*) => EquipItem())
+Main.AddButton("x180 y340 w155 h40", "SELL JUNK").OnEvent("Click", (*) => SellJunk())
+Main.AddButton("x15 y385 w320 h40", "LOCK / UNLOCK SELECTED").OnEvent("Click", (*) => ToggleLock())
+EquipLabel := Main.AddText("x15 y430 w320", "Equipped: Wooden Spoon")
+
+Tabs.UseTab(5)
+Main.SetFont("Bold cFFD700 s12")
+SoulDisp := Main.AddText("x20 y60 w310 Center", "Souls: 0")
+Main.SetFont("s9 Norm cWhite")
+Main.AddText("x20 y110 w310 Center", "Ascend requires 1,000,000 Potatoes`nGives 1 Soul (+50% Total Power)")
+Main.AddButton("x20 y150 w310 h50", "ASCEND NOW").OnEvent("Click", (*) => Reincarnate())
+
+Main.OnEvent("Close", (*) => ExitApp())
+
+LoadGame()
+RefreshMap()
+UpdateUI()
+Main.Show()
+
+SetTimer(GameLoop, GameState.AttackSpeed)
+SetTimer(BossTick, 1000)
+SetTimer(AutoSaveLoop, 10000)
+
+; ==============================================================================
+; CORE LOGIC
+; ==============================================================================
+
+AutoSaveLoop() {
+    SaveGame()
+    Log("Autosaved Data.")
+}
+
+GameLoop() {
+    if (GameState.AutoBuy) {
+        cost := Round(100 * (1.15 ** GameState.UpgradeLevel))
+        if (GameState.Potatoes >= cost) {
+            BuyStrength()
+        }
+    }
+    DealDamage(false)
+}
+
+DealDamage(isManual) {
+    global EnemyHP, EnemyMax, CurrentZone, LastUnlockedZone
+    baseDmg := (GameState.Attack + Gear.Weapon.Atk) * GameState.Mult * (isManual ? 1.5 : 1)
+    isCrit := (Random(1, 100) <= GameState.CritChance)
+    dmg := isCrit ? (baseDmg * 5) : baseDmg
+    EnemyHP -= dmg
+    
+    FloatArea.SetFont(isCrit ? "s12 Bold cFFFF00" : "s10 Norm c00FF00")
+    FloatArea.Value := (isCrit ? "!!! CRIT !!! " : "+") . Round(dmg, 1)
+    
+    if (EnemyHP <= 0) {
+        GameState.Potatoes += 5 * GameState.Mult * Zones[CurrentZone].Mult
+        GameState.Kills++, GameState.TotalKills++
+        
+        if (LastUnlockedZone < Zones.Length) {
+            if (GameState.TotalKills >= Zones[LastUnlockedZone + 1].Req) {
+                Global LastUnlockedZone += 1
+                Log("NEW ZONE: " Zones[LastUnlockedZone].Name)
+                RefreshMap()
+            }
+        }
+        
+        if (Random(1, 100) <= 20) {
+            RollLoot()
+        }
+            
+        if (Mod(GameState.Kills, 10) == 0 && GameState.Kills > 0 && !GameState.IsBoss) {
+            SpawnBoss()
+        } else {
+            SpawnEnemy()
+        }
+    }
+    UpdateUI()
+}
+
+SpawnEnemy() {
+    global EnemyHP, EnemyMax
+    GameState.IsBoss := false
+    BossText.Visible := false
+    EnemyMax := Zones[CurrentZone].HP * (1 + (GameState.Kills * 0.1))
+    EnemyHP := EnemyMax
+    EnemyLabel.Value := "POTATO BEETLE"
+}
+
+SpawnBoss() {
+    global EnemyHP, EnemyMax
+    GameState.IsBoss := true
+    GameState.BossTimer := 30
+    BossText.Visible := true
+    EnemyMax := Zones[CurrentZone].HP * 5
+    EnemyHP := EnemyMax
+    EnemyLabel.Value := "BOSS: GIANT SPUD"
+}
+
+BossTick() {
+    if (GameState.IsBoss) {
+        GameState.BossTimer -= 1
+        if (GameState.BossTimer <= 0) {
+            GameState.IsBoss := false
+            BossText.Visible := false
+            Log("Boss escaped!")
+            SpawnEnemy()
+        } else {
+            BossText.Value := "BOSS: " GameState.BossTimer "s"
+        }
+    }
+}
+
+; ==============================================================================
+; LOOT & INVENTORY
+; ==============================================================================
+
+RollLoot() {
+    global Inventory
+    if (Inventory.Length >= GameState.MaxInv) {
+        return
+    }
+    tw := 0
+    for r in Rarities {
+        tw += r.Weight
+    }
+    roll := Random(1, tw), cs := 0, sel := Rarities
+    for r in Rarities {
+        cs += r.Weight
+        if (roll <= cs) {
+            sel := r
+            break
+        }
+    }
+    atk := Round(Random(2, 10) * sel.Power * (Zones[CurrentZone].Mult * 0.5))
+    newItem := {Name: "[" sel.Name "] Peeler", Atk: atk, Rarity: sel.Name, IsLocked: false}
+    Inventory.Push(newItem)
+    InvLV.Add(, newItem.Name, newItem.Atk)
+    Log("LOOT: Found " sel.Name " Item (+" atk " Atk)")
+}
+
+ToggleLock(*) {
+    global Inventory
+    if !(row := InvLV.GetNext()) {
+        MsgBox "Select an item in the list first!"
+        return
+    }
+    item := Inventory[row]
+    item.IsLocked := !item.IsLocked
+    
+    if (item.IsLocked) {
+        if !InStr(item.Name, "🔒") {
+            item.Name := "🔒 " item.Name
+        }
+    } else {
+        item.Name := StrReplace(item.Name, "🔒 ", "")
+    }
+    InvLV.Modify(row, , item.Name)
+    Log(item.IsLocked ? "Locked " item.Name : "Unlocked " item.Name)
+}
+
+SellJunk(*) {
+    global Inventory
+    if (Inventory.Length == 0) {
+        return
+    }
+    earned := 0
+    newInv := []
+    InvLV.Delete()
+    for item in Inventory {
+        isHighRarity := (InStr(item.Name, "Legendary") || InStr(item.Name, "Epic"))
+        if (item.IsLocked || isHighRarity || item.Atk > Gear.Weapon.Atk) {
+            newInv.Push(item)
+            InvLV.Add(, item.Name, item.Atk)
+        } else {
+            earned += Max(5, Round(item.Atk * 0.5))
+        }
+    }
+    Inventory := newInv
+    GameState.Potatoes += earned
+    UpdateUI()
+    Log("Sold junk for " earned)
+}
+
+EquipItem(*) {
+    global Inventory, Gear
+    if !(row := InvLV.GetNext()) {
+        return
+    }
+    item := Inventory[row]
+    if (Gear.Weapon.Name != "Wooden Spoon") {
+        Inventory.Push(Gear.Weapon)
+        InvLV.Add(, Gear.Weapon.Name, Gear.Weapon.Atk)
+    }
+    Gear.Weapon := item
+    Inventory.RemoveAt(row)
+    InvLV.Delete(row)
+    EquipLabel.Value := "Equipped: " item.Name " (+" item.Atk " Atk)"
+    UpdateUI()
+}
+
+; ==============================================================================
+; PERSISTENCE & UI
+; ==============================================================================
+
+FormatNum(n) => RegExReplace(Round(n), "\G\d+?(?=(\d{3})+(?:\D|$))", "$0,")
+Log(msg) => LogBox.Value := "[" A_Hour ":" A_Min ":" A_Sec "] " msg "`r`n" LogBox.Value
+
+UpdateUI() {
+    StatText.Value := FormatNum(GameState.Potatoes) " POTATOES"
+    SoulDisp.Value := "Souls: " GameState.Souls " (x" Round(GameState.Mult, 1) " Power)"
+    EnemyBar.Value := (EnemyHP / Max(1, EnemyMax)) * 100
+    currentCost := Round(100 * (1.15 ** GameState.UpgradeLevel))
+    UpgradePriceDisp.Value := "Cost: " FormatNum(currentCost) " Potatoes"
+    InvCountText.Value := "Bag: " Inventory.Length "/" GameState.MaxInv
+    AutoStatus.Value := "Auto: " (GameState.AutoBuy ? "Clicking+Buying" : "Clicking")
+    if (LastUnlockedZone < Zones.Length) {
+        target := Zones[LastUnlockedZone + 1].Req
+        MiniBar.Value := (GameState.TotalKills / Max(1, target)) * 100
+        MiniText.Value := FormatNum(GameState.TotalKills) "/" FormatNum(target) " to Next Zone"
+    }
+}
+
+SaveGame(*) {
+    global Inventory, Gear
+    try {
+        statStr := GameState.Potatoes "|" GameState.TotalKills "|" GameState.Souls "|" GameState.Attack "|" GameState.UpgradeLevel "|" (GameState.AutoBuy ? 1 : 0) "|" A_Now "||"
+        for item in Inventory {
+            statStr .= item.Name ":" item.Atk ":" (item.IsLocked ? 1 : 0) ","
+        }
+        statStr := RTrim(statStr, ",") "||" Gear.Weapon.Name ":" Gear.Weapon.Atk
+        encoded := ""
+        Loop Parse, statStr {
+            encoded .= Chr(Ord(A_LoopField) + 3)
+        }
+        IniWrite(encoded, SavePath, "Data", "S")
+    } catch Error as e {
+        Log("Save Failed: " e.Message)
+    }
+}
+
+LoadGame() {
+    global Inventory, Gear
+    if !FileExist(SavePath) {
+        return
+    }
+    try {
+        enc := IniRead(SavePath, "Data", "S")
+        raw := ""
+        Loop Parse, enc {
+            raw .= Chr(Ord(A_LoopField) - 3)
+        }
+        sec := StrSplit(raw, "||")
+        p := StrSplit(sec[1], "|")
+        if (p.Length >= 7) {
+            GameState.Potatoes := Number(p[1])
+            GameState.TotalKills := Number(p[2])
+            GameState.Souls := Number(p[3])
+            GameState.Attack := Number(p[4])
+            GameState.UpgradeLevel := Number(p[5])
+            GameState.AutoBuy := (p[6] == "1")
+            GameState.Mult := 1.0 + (GameState.Souls * 0.5)
+            CalculateOffline(p[7])
+        }
+        if (sec.Length >= 2 && sec[2] != "") {
+            for item in StrSplit(sec[2], ",") {
+                b := StrSplit(item, ":")
+                if (b.Length >= 2) {
+                    newItem := {Name: b[1], Atk: Number(b[2]), IsLocked: (b.Length >= 3 && b[3] == "1")}
+                    Inventory.Push(newItem)
+                    InvLV.Add(, newItem.Name, newItem.Atk)
+                }
+            }
+        }
+        if (sec.Length >= 3) {
+            b := StrSplit(sec[3], ":")
+            Gear.Weapon := {Name: b[1], Atk: Number(b[2])}
+            EquipLabel.Value := "Equipped: " b[1] " (+" b[2] " Atk)"
+        }
+    } catch {
+        Log("Load error. Data may be corrupt.")
+    }
+}
+
+CalculateOffline(t) {
+    diff := DateDiff(A_Now, t, "Seconds")
+    if (diff < 60) {
+        return
+    }
+    earned := Round(Min(diff, 43200) * (((GameState.Attack + Gear.Weapon.Atk) * GameState.Mult) / Max(1, Zones[CurrentZone].HP)) * 5)
+    GameState.Potatoes += earned
+    Log("Offline Gains: " earned)
+    MsgBox("Offline for " Round(diff/60) "m. Earned " FormatNum(earned) " Potatoes.")
+}
+
+; ==============================================================================
+; SHOP & NAVIGATION
+; ==============================================================================
+
+BuyStrength() {
+    cost := Round(100 * (1.15 ** GameState.UpgradeLevel))
+    if (GameState.Potatoes >= cost) {
+        GameState.Potatoes -= cost
+        GameState.Attack++
+        GameState.UpgradeLevel++
+        UpdateUI()
+    }
+}
+
+SelectZoneFromMap(lv, row) {
+    global SelectedZoneIdx := row
+    if (row == 0) {
+        return
+    }
+    z := Zones[row]
+    ZoneDesc.Value := z.Name ":`n" z.Desc "`nMult: x" z.Mult
+    TravelBtn.Enabled := (GameState.TotalKills >= z.Req)
+}
+
+ExecuteTravel() {
+    global CurrentZone := SelectedZoneIdx
+    GameState.Kills := 0
+    SpawnEnemy()
+    Tabs.Value := 1
+    UpdateUI()
+    Log("Traveling...")
+}
+
+RefreshMap() {
+    ZoneLV.Delete()
+    for z in Zones {
+        ZoneLV.Add(, z.Name, z.Req, (GameState.TotalKills >= z.Req ? "READY" : "LOCKED"))
+    }
+}
+
+Reincarnate(*) {
+    if (GameState.Potatoes >= 1000000) {
+        GameState.Souls++
+        SaveGame()
+        Reload()
+    } else {
+        MsgBox "Need 1,000,000 Potatoes to Ascend!"
+    }
+}
