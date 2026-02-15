@@ -51,17 +51,17 @@ Main.SetFont("s8 cAAAAAA")
 ZoneDisplay := Main.AddText("x25 y110 w300 Center", "Current Zone: Muddy Patch")
 ; -----------------------
 
-Main.SetFont("Bold s10 cFF4444")
-EnemyLabel := Main.AddText("x25 y125 w300 Center", "POTATO BEETLE")
+Main.SetFont("Bold s11 cFF4444") 
+EnemyLabel := Main.AddText("x25 y125 w300 h35 Center", "POTATO BEETLE")
 Main.SetFont("Norm cWhite")
-EnemyBar := Main.AddProgress("x25 y145 w300 h20 Background333333 cFF4444", 100)
+EnemyBar := Main.AddProgress("x25 y170 w300 h20 Background333333 cFF4444", 100)
 Main.SetFont("Bold cFF8800")
-BossText := Main.AddText("x25 y175 w300 Center Hidden", "BOSS: 30s")
+BossText := Main.AddText("x25 y200 w300 Center Hidden", "BOSS: 30s")
 Main.SetFont("Norm c00FF00")
-FloatArea := Main.AddText("x25 y200 w300 h25 Center", "")
+FloatArea := Main.AddText("x25 y225 w300 h25 Center", "")
 Main.SetFont("s8 cAAAAAA")
-MiniBar := Main.AddProgress("x15 y230 w320 h8 Background333333 c00AAFF", 0)
-MiniText := Main.AddText("x15 y242 w320 Center", "Progress to next Zone")
+MiniBar := Main.AddProgress("x15 y255 w320 h8 Background333333 c00AAFF", 0)
+MiniText := Main.AddText("x15 y267 w320 Center", "Progress to next Zone")
 Main.SetFont("s10 Norm cWhite")
 LogBox := Main.AddEdit("x15 y270 w320 r8 ReadOnly Background000000 c00FF00", "Welcome back, Farmer!`n")
 
@@ -174,7 +174,10 @@ SpawnEnemy() {
     GameState.IsBoss := false
     BossText.Visible := false
     EnemyBar.Opt("cFF4444")
-    EnemyLabel.SetFont("Bold cFF4444")
+    
+    ; RESET font to s11 so it doesn't shrink or stay as s14
+    EnemyLabel.SetFont("s11 Bold cFF4444") 
+    
     EnemyMax := Zones[CurrentZone].HP * (1 + (GameState.Kills * 0.1))
     EnemyHP := EnemyMax
     EnemyLabel.Value := "POTATO BEETLE"
@@ -186,31 +189,35 @@ SpawnBoss() {
     GameState.BossTimer := 30
     BossText.Visible := true
     EnemyBar.Opt("cFFD700")
-    EnemyLabel.SetFont("Bold s14 cFF8800")
+    
+    ; 1. Set Boss Font to big s14
+    EnemyLabel.SetFont("s14 Bold cFF8800") 
+    ; 2. Increase the box height to h35 so the big letters aren't cut off
+    EnemyLabel.Move(,, 300, 35) 
+    
     EnemyMax := Zones[CurrentZone].HP * 5
     EnemyHP := EnemyMax
     EnemyLabel.Value := "⚠️ BOSS: GIANT SPUD ⚠️"
-    Log("!!! BOSS ALERT: GIANT SPUD APPEARED !!!")
 }
+
+
 
 BossTick() {
     if (GameState.IsBoss) {
         GameState.BossTimer -= 1
-        if Mod(GameState.BossTimer, 2)
-            EnemyLabel.SetFont("cFFD700")
-        else
-            EnemyLabel.SetFont("cFF4444")
-            
+        ; Pulse ONLY the color, keeping the s14 size stable
+        EnemyLabel.SetFont(Mod(GameState.BossTimer, 2) ? "s14 cFFD700" : "s14 cFF4444")
+        
         if (GameState.BossTimer <= 0) {
             GameState.IsBoss := false
             BossText.Visible := false
-            Log("Boss escaped!")
             SpawnEnemy()
         } else {
-            BossText.Value := "BOSS ESCAPES IN: " GameState.BossTimer "s"
+            BossText.Value := "BOSS: " GameState.BossTimer "s"
         }
     }
 }
+
 
 RollLoot(isBoss := false) {
     global Inventory
@@ -259,24 +266,30 @@ ToggleLock(*) {
 }
 
 SellJunk(*) {
-    global Inventory
     if (Inventory.Length == 0)
         return
-    earned := 0, newInv := [], InvLV.Delete()
-    for item in Inventory {
-        isHighRarity := (InStr(item.Name, "Legendary") || InStr(item.Name, "Epic"))
-        if (item.IsLocked || isHighRarity || item.Atk > Gear.Weapon.Atk) {
-            newInv.Push(item)
-            InvLV.Add(, item.Name, item.Atk)
+    earned := 0, nInv := [], InvLV.Delete()
+    for i in Inventory {
+        ; SAFETY CHECK: Ensure 'i' is a valid object with 'IsLocked'
+        if !HasProp(i, "IsLocked")
+            continue 
+
+        ; Removed "Epic" protection - only Legendary and Locked are safe
+        if (i.IsLocked || InStr(i.Name, "Legendary") || i.Atk > Gear.Weapon.Atk) {
+            nInv.Push(i), row := InvLV.Add(, i.Name, i.Atk)
+            try InvLV.Modify(row, "c" i.Color)
         } else {
-            earned += Max(5, Round(item.Atk * 0.5))
+            earned += Max(5, Round(i.Atk * 0.5))
         }
     }
-    Inventory := newInv
+    Global Inventory := nInv
     GameState.Potatoes += earned
     UpdateUI()
     Log("Sold junk for " earned)
 }
+
+
+
 
 EquipItem(*) {
     global Inventory, Gear
