@@ -200,8 +200,6 @@ SpawnBoss() {
     EnemyLabel.Value := "⚠️ BOSS: GIANT SPUD ⚠️"
 }
 
-
-
 BossTick() {
     if (GameState.IsBoss) {
         GameState.BossTimer -= 1
